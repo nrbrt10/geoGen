@@ -4,9 +4,6 @@ import matplotlib.pyplot as plt
 def clamp(n, mn, mx):
     return max(mn, min(mx, n))
 
-def distance(p1, p2):
-    return np.linalg.norm(p1-p2)
-
 def get_inset_seeds(points, width, height, margin=0.15):
     xmin = width * margin 
     xmax = width * (1 - margin)

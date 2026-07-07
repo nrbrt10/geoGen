@@ -43,3 +43,6 @@ def compute_voronoi_areas_r1(points, regions, vertices):
             cross = np.cross(b - a, c - a)
             areas[idx] += 0.5 * np.linalg.norm(cross)
     return areas
+
+def distance(p1, p2):
+    return np.linalg.norm(p1-p2)
