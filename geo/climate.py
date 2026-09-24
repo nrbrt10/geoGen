@@ -102,3 +102,13 @@ def scale_precipitaion(precipitation, percentile=95, percentile_map=2500):
     k = percentile_map / np.percentile(precipitation, [percentile])
     precipitation_mm = precipitation * k
     return precipitation_mm
+
+def compute_wind_vectors(coords: np.array, equator_y, k_strength=0.3):
+    _, lat = coords.T
+    normalized_lat = (lat - equator_y) / equator_y
+    lat_radians = normalized_lat * (np.pi / 2)
+    
+    w_lon = -np.cos(2 * lat_radians)
+    w_lat = -np.sign(normalized_lat) * k_strength * np.exp(-np.abs(lat_radians) * 3)
+    
+    return np.column_stack([w_lon, w_lat])

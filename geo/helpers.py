@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 def clamp(n, mn, mx):
     return max(mn, min(mx, n))
 
+def distance(p1, p2):
+    return np.linalg.norm(p1-p2)
+
 def get_inset_seeds(points, width, height, margin=0.15):
     xmin = width * margin 
     xmax = width * (1 - margin)
@@ -46,3 +49,12 @@ def describe_array(x, percentiles=[10, 20, 60, 90, 99], plot=False, name=None):
         ax.hist(x, bins=50)
 
         plt.show()
+
+def create_log(name, log):
+    with open(name, 'w') as file:
+        file.write(log)
+
+def lpad(length, text):
+    if len(text) >= length:
+        raise Exception('Text longer than string length')
+    return text + ' ' * (length - len(text))

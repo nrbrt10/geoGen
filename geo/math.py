@@ -44,5 +44,71 @@ def compute_voronoi_areas_r1(points, regions, vertices):
             areas[idx] += 0.5 * np.linalg.norm(cross)
     return areas
 
-def distance(p1, p2):
-    return np.linalg.norm(p1-p2)
+def normalize_array(x: np.array, min: float, max: float):
+    return (x - min) / (max - min)
+
+def project_3d_to_2d(x, y, z, type='equirectangular') -> tuple[np.array, np.array]:
+    '''
+    Takes transposed 3d vector and converts to degrees
+    '''
+    lon = np.arctan2(y, x)
+    if type == 'equirectangular':
+        lat = np.arcsin(z)
+    elif type == 'lambert':
+        lat = z
+    radians = np.column_stack([lon, lat])
+    degrees = np.degrees(radians)
+    return radians, degrees
+
+def chord_to_tangent(tangent_point, v: np.array):
+    normalized = tangent_point / np.linalg.norm(tangent_point)
+    v_tan = v - (v @ normalized)[:, np.newaxis] * normalized
+    return v_tan
+
+def build_tangent_vectors(points, adjacency):
+    vectors = [-1] * len(points)
+    for idx, point in enumerate(points):
+        v = points[np.array(list(adjacency[idx]))] - point
+        v_tan = chord_to_tangent(point, v)
+        vectors[idx] = {neighbor: tan for neighbor, tan in zip(adjacency[idx], v_tan)}
+    return vectors
+
+def compute_voronoi_areas_r1(points, regions, vertices):
+    '''
+    For unit sphere (r=1)
+    '''
+    areas = np.zeros(len(points))
+    for idx, region in enumerate(regions):
+        a = points[idx]
+        for i, vertex in enumerate(region):
+            b = vertices[vertex]
+            c = vertices[region[(i+1) % len(region)]]
+            cross = np.cross(b - a, c - a)
+            areas[idx] += 0.5 * np.linalg.norm(cross)
+    return areas
+
+def compute_basis_vectors(coords_radians):
+    lon = coords_radians[:,0:1]
+    lat = coords_radians[:,1:2]
+
+    e_lon = np.column_stack([-np.sin(lon), np.cos(lon), np.zeros(len(lon))])
+    e_lat = np.column_stack([-np.sin(lat) * np.cos(lon), -np.sin(lat)*np.sin(lon), np.cos(lat)])
+
+    return e_lon, e_lat
+
+def rebuild_3d_vectors(vectors_2d, e_lon, e_lat):
+    v_lon = vectors_2d[:,0:1]
+    v_lat = vectors_2d[:,1:2]
+
+    vectors_3d = v_lon * e_lon + v_lat * e_lat
+    return vectors_3d
+
+def geodesic_distance(a, b):
+    dot = np.clip(np.dot(a, b), -1, 1)
+    return np.arccos(dot)
+
+def random_tangent_vector(p, c, seed=123):
+    np.random.seed(seed + c)
+    r = np.random.randn(3)
+    r = r - np.dot(r, p) * p
+    return r / np.linalg.norm(r)

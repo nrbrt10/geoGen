@@ -1,40 +1,43 @@
-from . import np, deque, heapq, math
+from . import np, deque, heapq, math, sn
 from .helpers import clamp
+from .adjacency import sort_adjacency_graph
+from .graph_utils import find_root
+from .models.basins import Basin, BasinPool, PoolState
+from enum import IntEnum
 
-def generate_drainage_data(elevations: np.array, adjacency: dict, sea_level: float, base_absorption=.4):
-    directionality = np.full(len(elevations), [-3], dtype=np.int32)
-    absorption = np.full(len(elevations), [-1], dtype=np.float32)
+class HydrologyTag(IntEnum):
+    INLAND_SINK = -1
+    OCEAN_OUTLET = -2
+    OCEAN = -3
+
+def generate_drainage_data(elevations: np.array, adjacency: dict, sea_level: float, base_absorption: float=.4):
+
+    drainage = np.full(len(elevations), HydrologyTag.OCEAN, dtype=np.int32)
+    absorption = np.full(len(elevations), [-1], dtype=np.float64)
     slopes = np.full(len(elevations), [-1], dtype=np.float32)
 
-    DRAIN_INLAND = np.int32(-1)
-    DRAIN_TO_SEA = np.int32(-2)
+    sorted_adjacency = sort_adjacency_graph(adjacency, elevations)
 
     for idx, elevation in enumerate(elevations):
         if elevation <= sea_level:
             continue
 
-        lowest = None
-        for neighbor in adjacency[idx]:
-            if elevations[neighbor] < elevation:
-                if lowest is None:
-                    lowest = neighbor
-                elif elevations[neighbor] < elevations[lowest]:
-                    lowest = neighbor
-                    
+        lowest = next((neighbor for neighbor in sorted_adjacency[idx] if elevations[neighbor] < elevation), None)
+        slope = 1 if lowest is None else elevation - elevations[lowest]
+            
         if lowest is None:
-            lowest = DRAIN_INLAND
-        elif elevations[lowest] <= sea_level:
-            directionality[lowest] = DRAIN_TO_SEA
-                
-        directionality[idx] = lowest
-        if lowest != -1:
-            slopes[idx] = elevation - elevations[lowest]
-        else:
+            drainage[idx] = HydrologyTag.INLAND_SINK
             slopes[idx] = 1
-        absorption[idx] = base_absorption * clamp(1/slopes[idx], 0, 1) ** 1.75
+        elif elevations[lowest] <= sea_level:
+            drainage[idx] = HydrologyTag.OCEAN_OUTLET
+            slopes[idx] = slope
+        else:
+            drainage[idx] = lowest
+            slopes[idx] = slope
+            
+        absorption[idx] = base_absorption * clamp(1/slope, 0, 1) ** 1.75
         
-
-    return directionality, absorption, slopes
+    return drainage, absorption, slopes
 
 def invert_drainage_array(drainage_array: np.array):
     inv_drainage = {}
@@ -51,18 +54,14 @@ def invert_drainage_array(drainage_array: np.array):
 def label_watersheds(drainage_array: np.array):
     sinks = [np.int32(idx) for idx, pointer in enumerate(drainage_array) if pointer in [-1, -2]]
     inverted_drainage_array = invert_drainage_array(drainage_array)
-    watersheds_array = np.full(len(drainage_array), [-1], dtype=np.int32)
-    watersheds = {}
+    watersheds_array = np.full(len(drainage_array), -1, dtype=np.int32)
+
     for sink in sinks:
         stack = [sink]
-        watersheds[np.int32(sink)] = set()
         while stack:
             current = stack.pop()
-            if watersheds_array[current] == sink:
-                continue
-            
-            if drainage_array[current] != -2:
-                watersheds_array[current] = sink
+
+            watersheds_array[current] = sink
 
             if current in inverted_drainage_array:
                 stack.extend(inverted_drainage_array[current])
@@ -76,41 +75,52 @@ def drainage_dependencies(inverted_drainage_graph: dict) -> dict:
 
     return dependencies_graph
 
-def compute_flow_volume(drainage_array: np.array, rainfall: np.array, absorption: np.array, slopes: np.array, soil_capacity: np.array, evaporation_rate: np.array | float=.175, soil_permeability=.5, drainage_efficiency=1.2):
-    sources = [idx for idx, val in enumerate(drainage_array) if idx not in drainage_array and val not in [-2, -3]]
-    dependency_count = drainage_dependencies(invert_drainage_array(drainage_array))
-    inflows = np.zeros(shape=len(drainage_array))
-    saturation = np.full(len(drainage_array), [-1], dtype=np.float32)
-    drainage_volumes = np.zeros(shape=len(drainage_array))
+def compute_flow_volume(
+        drainage_graph: np.array,
+        rainfall_mmy: np.array,
+        absorption: np.array,
+        slopes: np.array,
+        soil_capacity: np.array,
+        areas_km2: np.array,
+        evaporation_rate: np.array | float=.175,
+        ):
+
+    sources = [idx for idx, val in enumerate(drainage_graph) if idx not in drainage_graph and val not in [HydrologyTag.OCEAN]]
+    dependency_count = drainage_dependencies(invert_drainage_array(drainage_graph))
+    inflows = np.zeros(shape=len(drainage_graph))
+    saturation = np.full(len(drainage_graph), -1, dtype=np.float64)
+    areas_m2 = areas_km2 * 1e6
+    rainfall_m3 = rainfall_mmy / 1000 * areas_m2
+    drainage_volumes = np.full(len(drainage_graph), np.nan)
+
+    if isinstance(evaporation_rate, float):
+        evaporation_rate = np.full(len(drainage_graph), evaporation_rate)
 
     queue = deque()
     queue.extend(sources)
 
-    if isinstance(evaporation_rate, float):
-        evaporation_rate = np.full(len(drainage_array), evaporation_rate)
-
     while queue:
         current = queue.popleft()
 
-        if drainage_array[current] in [-2, -3]:
+        if drainage_graph[current] in [-3]:
             continue
 
         if slopes[current] == -1 or absorption[current] == -1:
             raise ValueError(f'Slopes or absorption data invalid at: {current}')
 
-        total_load = rainfall[current] + inflows[current]
+        total_load = rainfall_m3[current] + inflows[current]
         saturation[current] = np.clip(math.array_safe_divide(total_load * absorption[current] * (1 - evaporation_rate[current]), soil_capacity[current], 0), 0, 2)
         runoff = total_load * (1 - evaporation_rate[current]) * (1 - absorption[current])
         drainage_volumes[current] = runoff
 
-        if drainage_array[current] in [-1]:
+        if drainage_graph[current] in [-1, -2]:
             continue
 
-        inflows[drainage_array[current]] += runoff
-        dependency_count[drainage_array[current]] -= 1
+        inflows[drainage_graph[current]] += runoff
+        dependency_count[drainage_graph[current]] -= 1
 
-        if dependency_count[drainage_array[current]] == 0:
-            queue.append(drainage_array[current])
+        if dependency_count[drainage_graph[current]] == 0:
+            queue.append(drainage_graph[current])
 
     return drainage_volumes, saturation
 
@@ -131,219 +141,311 @@ def build_drainage_segments_sv(drainage_array: np.array, regions_to_ridge_points
 
     return segments
 
-def merge_adjacent_sinks(sinks, adjacency_graph):
-    merged_sinks = {}
-    visited = set()
+def label_basins_se(elevations, drainage_array, watersheds, adjacency_graph) -> tuple[np.array, dict[int, Basin]]:
+    '''
+    
+    '''
 
-    for sink in sinks:
-        if sink in visited:
+    sorted_land_adjacency = sort_adjacency_graph(adjacency_graph, elevations)
+    inland_sinks = np.array([i for i, v in enumerate(drainage_array) if v == HydrologyTag.INLAND_SINK])
+    drain_to_sea = drainage_array[watersheds] == HydrologyTag.OCEAN_OUTLET
+
+    edges = set()
+    for u in sorted_land_adjacency:
+        for v in sorted_land_adjacency[u]:
+            if drain_to_sea[u] and drain_to_sea[v]:
+                continue
+            if u < v:
+                edges.add((max(elevations[u], elevations[v]), min(elevations[u], elevations[v]), u, v))
+
+    sorted_edges = sorted(list(edges), key=lambda x: (x[0], x[1]))
+
+    spill_data = {}
+    spilled = set()
+    basin_data = {sink: Basin(id=sink) for sink in inland_sinks}
+
+    basin_members = np.full(len(drainage_array), -1, dtype=np.int32)
+    basin_members[inland_sinks] = inland_sinks
+
+    for i, (saddle, _, u, v) in enumerate(sorted_edges):
+
+        ws_u = watersheds[u]
+        ws_v = watersheds[v]
+
+        root_u = ws_u if ws_u not in spilled else find_root(basin_members, ws_u)
+        root_v = ws_v if ws_v not in spilled else find_root(basin_members, ws_v)
+            
+        if root_u in spilled and root_v in spilled:
             continue
 
-        component = set()
-        queue = [sink]
-
-        while queue:
-            current = queue.pop()
-            if current in component:
+        if drain_to_sea[u] or drain_to_sea[v]:
+            if drain_to_sea[u] and root_v not in spilled:
+                sink = root_v
+                member = v
+                spill_at = v
+                spill_to = u
+            elif drain_to_sea[v] and root_u not in spilled:
+                sink = root_u
+                member = u
+                spill_at = u
+                spill_to = v
+            else:
                 continue
-            component.add(current)
-            visited.add(current)
-            queue.extend(n for n in adjacency_graph[current] if n in sinks and n not in component)
 
-        merged_sinks[sink] = component
-    return merged_sinks
+            spilled.add(sink)
+            basin_data[sink].set_spill(at=spill_at, to=spill_to)
+            basin_data[sink].saddle = saddle
+            basin_members[member] = sink
+            continue
 
-def label_basins(drainage_array, adjacency_graph, elevations, watersheds, mode=None):
-    inland_sinks = sorted([idx for idx, val in enumerate(drainage_array) if val == -1], key=lambda i: elevations[i], reverse=False)
-    watersheds_sink_labels = { sink : drainage_array[sink] for sink in np.unique(watersheds) if sink != -1 }
+        if root_u == root_v:
+            if root_u not in spill_data:
+                basin_members[v] = root_v
+                basin_members[u] = root_u
+            continue
 
-    DRAIN_INLAND = -1
-    DRAIN_TO_OCEAN = -2
+        if root_u in spilled and root_v not in spilled:
+            parent = root_u
+            basin_members[v] = root_v
+            sink = root_v
+            spill_at = v
+            spill_to = u
 
-    membership_pointer = np.full(len(drainage_array), [-1], dtype=np.int32)
-    labels = {
-        sink:
-        {
-            "id": i,
-            "parent": None,
-            "spill_at": None,
-            "spill_to": None,
-            "escape": None,
-            "members": []
-        } for i, sink in enumerate(inland_sinks)
-    }
-    
-    reconcile_basins = []
+        elif root_v in spilled and root_u not in spilled:
+            parent = root_v
+            basin_members[u] = root_u
+            sink = root_u
+            spill_at = u
+            spill_to = v
 
-    for sink in inland_sinks:
-        membership_pointer[sink] = sink
-
-        current = sink
-        visit_order = []
-        current_water_elev = elevations[sink]
-
-        while current:
-            current_sink = watersheds[current]
-            if watersheds_sink_labels[current_sink] == DRAIN_TO_OCEAN:
-                _, idx = labels[sink]["members"][-1]
-                labels[sink]["escape"] = idx
-                labels[sink]["spill_to"] = current
-            elif watersheds_sink_labels[current_sink] == DRAIN_INLAND and current_sink != sink:
-                    if labels[current_sink]["escape"] is not None:
-                        _, idx = labels[sink]["members"][-1]
-                        labels[sink]["spill_at"] = idx
-                        labels[sink]["spill_to"] = current
-                        labels[sink]["escape"] = labels[current_sink]["escape"]
-                        labels[sink]["parent"] = current_sink
-                        break
+        else:
+            basin_members[v] = root_v
+            basin_members[u] = root_u
+            if elevations[root_v] >= elevations[root_u]:
+                parent = root_u
+                sink = root_v
+                spill_at = v
+                spill_to = u
             else:
-                if current_water_elev < elevations[current] and labels[sink]["escape"] is None:
-                    current_water_elev = elevations[current]
-                elif labels[sink]["escape"] is not None:
-                    current_water_elev = elevations[labels[sink]["escape"]]
+                parent = root_v
+                sink = root_u
+                spill_at = u
+                spill_to = v
+            basin_members[sink] = parent
+            basin_data[parent].children.append((saddle, sink))
+
+        basin_data[sink].set_spill(at=spill_at, to=spill_to)
+        basin_data[sink].saddle = saddle
+        spilled.add(sink)
+
+    for i, root in enumerate(basin_members):
+        if root != -1:
+            basin_members[i] = find_root(basin_members, root)
+
+    return basin_members, basin_data
+
+def get_basin_drainage_links(basin_data, watersheds):
+    links = {}
+    for sink, data in basin_data.items():
+        spill_to = data.spill.to
+        to_root = watersheds[spill_to]
+        if to_root not in basin_data:
+            continue
+        links[sink] = to_root
+
+    return links
+
+def get_basin_dependencies(basin_data, basin_links):
+    hierarchy = {sink: set() for sink in basin_data.keys()}
+    for at_root, to_root in basin_links.items():
+        hierarchy[to_root].add(at_root)
+
+    return hierarchy
+
+def cascade_throughputs_djs(start: int, value: float, pointer_array: np.array, djs_parents: np.array) -> np.array:
+    '''Returns delta array to sum with throughputs'''
+    delta = np.zeros(len(pointer_array))
+    cur = start
+    while True:
+        if djs_parents[cur] != -1:
+            root = find_root(djs_parents, cur)
+            delta[root] += value
+            break
+
+        delta[cur] += value
+        if pointer_array[cur] in [HydrologyTag.OCEAN_OUTLET, HydrologyTag.INLAND_SINK]:
+            break
+        
+        cur = pointer_array[cur]
+
+    return delta
+
+def basin_pooling_solver(
+        basin_id: int,
+        basin_data: dict[int, Basin],
+        djs_parents: np.array[int],
+        elevations_m: np.array[float],
+        depths_m: np.array[float],
+        areas_m2: np.array[float],
+        throughputs_m3: np.array[float],
+        pool_data: dict[int, BasinPool],
+        hydrology_graph: np.array[int],
+        watersheds: np.array[int]
+        ):
+
+    basin = basin_data[basin_id]
+    members = basin.members
+    saddle_elev = basin.saddle
+
+    volume_in_basin = sum(depths_m[members] * areas_m2[members])
+    total_actual_capacity = basin.capacity - volume_in_basin
+    inflow_vol = throughputs_m3[basin_id]
+
+    # Total volumetric check
+    if (outflow := inflow_vol - total_actual_capacity) > 0:
+        actual_members = [i for i in members if elevations_m[i] < saddle_elev]
+
+        hydrology_graph[basin.spill.at] = basin.spill.to
+        throughputs_m3 += cascade_throughputs_djs(basin.spill.to, outflow, hydrology_graph, djs_parents)
+
+        depths_m[actual_members] += saddle_elev - (elevations_m[actual_members] + depths_m[actual_members])
+        djs_parents[actual_members] = basin_id
+
+        pool_data[basin_id].set_outflow(outflow)
+        pool_data[basin_id].elevation = saddle_elev
+        pool_data[basin_id].members = actual_members
+
+        return outflow
+
+    # Pooling logic
+    else:
+        
+        cum_areas = np.cumsum(areas_m2[members])
+        accum_elevations = np.maximum.accumulate(elevations_m[members])
+        cum_el_x_area = np.cumsum(areas_m2[members] * elevations_m[members])
+        cum_capacity = accum_elevations * cum_areas - cum_el_x_area
+        members_current = []
+
+        for i, member in enumerate(members):
+            volume_in_basin_at_i = sum(depths_m[members_current] * areas_m2[members_current])
+            actual_capacity = cum_capacity[i] - volume_in_basin_at_i
+            cur_elevation = accum_elevations[i]
+
+            if inflow_vol > actual_capacity:
+                outflow = inflow_vol - actual_capacity
+                member_root = watersheds[member] if djs_parents[member] == -1 else find_root(djs_parents, member)
                 
-                if elevations[current] <= current_water_elev:
-                    membership_pointer[current] = sink
-                    labels[sink]["members"].append((elevations[current], current))
-                
-                for neighbor in adjacency_graph[current]:
-                    if (elevations[neighbor], neighbor) in labels[sink]["members"] or (elevations[neighbor], neighbor) in visit_order:
+                # When the basin touches another watershed, it either escaped (impossible in this loop), or touched a nested basin.
+                if member_root != basin_id:
+                    if pool_data[member_root].state == PoolState.UNPROCESSED:
+                        raise ValueError(f'Pool {member_root} elevation is None at: {basin_id}')
+                    
+                    elif pool_data[member_root].elevation == cur_elevation:
+                        parent, child = (basin_id, member_root) if elevations_m[basin_id] < elevations_m[member_root] else (member_root, basin_id)
+                        djs_parents[child] = parent
+                        members_current.append(member)
+
+                        if basin_id == child:
+                            pool_data[child].merge_to(parent)
+                            return outflow
+                        else:
+                            pool_data[child].merge_to(parent)
+                        
                         continue
-
-                    heapq.heappush(visit_order, (elevations[neighbor], neighbor))
-
-                _, idx = heapq.heappop(visit_order)
-                current = idx
-
-    # Some basins drain into basins above that haven't yet been explored. This step adds the escape cell once it has been identified.
-    for sink in reconcile_basins:
-        labels[sink]["escape"] = labels[labels[sink]["parent"]]["escape"]
-
-    if mode == "debug":
-        return labels, membership_pointer
-    return labels, membership_pointer
-
-def label_basins2(drainage_array, adjacency_graph, elevations, watersheds, mode=None):
-    inland_sinks = sorted([idx for idx, val in enumerate(drainage_array) if val == -1], key=lambda i: elevations[i], reverse=False)
-    watersheds_sink_labels = { sink : drainage_array[sink] for sink in np.unique(watersheds) if sink != -1 }
-
-    DRAIN_INLAND = -1
-    DRAIN_TO_OCEAN = -2
-
-    labels = {
-        sink:
-        {
-            "id": i,
-            "parent": None,
-            "spill_at_to": [],
-            "escape": None,
-            "members": []
-        } for i, sink in enumerate(inland_sinks)
-    }
-
-    for sink in inland_sinks:
-
-        current_water_level = elevations[sink]
-        visit_order = []
-        current = sink
-
-        while current:
-            current_sink = watersheds[current]
-            if elevations[current] <= current_water_level:
-                if watersheds_sink_labels == DRAIN_TO_OCEAN:
-                    labels[sink]["escape"] = next(m for m in labels[sink]["members"] if current in adjacency_graph[m])
-                    labels[sink]["spill_at_to"] = (labels[sink]["escape"], current)
-                    break
-                elif watersheds_sink_labels == DRAIN_INLAND and current_sink != sink:
-                    if labels[current_sink]["escape"] is not None:
-                        labels[sink]["escape"] = labels[current_sink]["escape"]
-                        labels[sink]["spill_at_to"] = (next(m for m in labels[sink]["members"] if current in adjacency_graph[m]), current)
-                        break
-
-                labels[sink]["members"].append(current)
-
-            for neighbor in adjacency_graph[current]:
-                if neighbor in labels[sink]["members"] or (elevations[neighbor], neighbor) in visit_order:
-                    continue
-
-                heapq.heappush(visit_order, (elevations[neighbor], neighbor))
-
-            _, idx = heapq.heappop(visit_order)
-            current = idx
-    
-    return labels
-
-def infer_hydrology(elevations_m, flow_graph_mm, basin_labels: dict, drainage_array, mode=None):
-    sinks = sorted([sink for sink in basin_labels.keys()], key=lambda i: elevations_m[i], reverse=True)
-    river_throughput = flow_graph_mm.copy()
-    hydrology = {sink: {} for sink in sinks}
-    if mode == 'debug':
-        log = {sink: {} for sink in sinks}
-
-    for sink in sinks:
-        current_water_level = river_throughput[sink] / 1000 + elevations_m[sink]
-        limit_idx = basin_labels[sink]["spill_at"] if basin_labels[sink]["spill_at"] is not None else basin_labels[sink]["escape"]
-        members = []
-        if len(basin_labels[sink]["members"]) > 1:
-            members.append(sink)
-
-        i = 1
-        while current_water_level < elevations_m[limit_idx] and i <= len(basin_labels[sink]["members"]) - 1:
-            _, idx = basin_labels[sink]["members"][i]
-
-            if elevations_m[idx] <= current_water_level:
-                current_water_level += river_throughput[idx] / 1000
-                members.append(idx)
-
-            i += 1
-
-        if len(members) > 0:
-            hydrology[sink]['members'] = members
-            hydrology[sink]['lake_depth'] = [current_water_level - elevations_m[member] for member in members]
-        
-        if current_water_level > elevations_m[limit_idx]:
-            hydrology[sink]['spillovers'] = (limit_idx, current_water_level - elevations_m[limit_idx])
-
-        if hydrology[sink].get('spillovers'):
-            delta = np.zeros(len(flow_graph_mm))
-            idx, volume = hydrology[sink]['spillovers']
-            current = idx
-            while drainage_array[drainage_array[current]] not in [-2, -3] and drainage_array[current] != -1:
-                delta[current] += volume
-                current = drainage_array[current]
-
-            river_throughput += delta
-
-    return river_throughput, hydrology
-
-def infer_hydrology2(elevations_m, flow_graph_mm, adjacency_graph, drainage_array, mode=None):
-    inland_sinks = sorted([idx for idx, val in enumerate(drainage_array) if val == -1], key=lambda i: elevations_m[i], reverse=False)
-    river_throughput = flow_graph_mm.copy()
-
-    lakes = {}
-
-    for sink in inland_sinks:
-        current_water_level = river_throughput[sink] / 1000
-        current = sink
-        visit_order = []
-        members = []
-        while current:
-            for neighbor in adjacency_graph:
-                if neighbor in members or (elevations_m[neighbor], neighbor) in visit_order:
-                    continue
-
-                heapq.heappush(visit_order, (elevations_m[neighbor], neighbor))
-
-            elev, next = heapq.heappop(visit_order)
-            if elev < current_water_level + elevations_m[current]:
-                current = next
-                current_water_level = (current_water_level + elevations_m[current]) - (elev + river_throughput[next])
+                    
+                    throughputs_m3 += cascade_throughputs_djs(member, outflow, hydrology_graph, djs_parents)
+                    outflow = basin_pooling_solver(member_root
+                                                   , basin_data
+                                                   , djs_parents
+                                                   , elevations_m
+                                                   , depths_m
+                                                   , areas_m2
+                                                   , throughputs_m3
+                                                   , pool_data
+                                                   , hydrology_graph
+                                                   , watersheds)
+                    
+                else:
+                    djs_parents[member] = basin_id
+                    members_current.append(member)
             else:
-                current = None
+                prev_elev = next((e for e in accum_elevations[::-1] if e < cur_elevation), None)
+                if prev_elev is None:
+                    raise ValueError(f'Could not find a value lower than {cur_elevation} in {accum_elevations}')
 
+                prev_actual_capacity = cum_capacity[i-1] - volume_in_basin_at_i
+                prev_cum_area = cum_areas[i-1]
+                outflow_m = (inflow_vol - prev_actual_capacity) / prev_cum_area
+                final_elevation = outflow_m + prev_elev
+                depths_m[members_current] += final_elevation - (elevations_m[members_current] + depths_m[members_current])
 
-        
+                pool_data[basin_id].elevation = final_elevation
+                pool_data[basin_id].state = PoolState.SUBMERGED
+                
+                outflow = 0
+                break
 
+        if outflow > 0:
+            if max(elevations_m[members]) < saddle_elev:
+                total_area = cum_areas[i]
+                outflow_m = (inflow_vol - actual_capacity) / total_area
+                final_elevation = outflow_m + cur_elevation
+                depths_m[members_current] += final_elevation - (elevations_m[members_current] + depths_m[members_current])
+
+                pool_data[basin_id].elevation = final_elevation
+                pool_data[basin_id].state = PoolState.SUBMERGED
+                
+            else:
+                raise Exception(basin_id, saddle_elev, elevations_m[members])
+
+    return
+
+def infer_hydrology(
+        elevations_m: np.array,
+        flow_graph_m3: np.array,
+        polygon_areas_km2: np.array,
+        basin_data: dict[int, Basin],
+        drainage_graph: np.array,
+        watersheds: np.array,
+        ):
+    
+    areas_m2 = polygon_areas_km2 * 1e6
+
+    hydrology_graph = drainage_graph.copy()
+    throughputs_m3 = flow_graph_m3.copy()
+    depths_m = np.zeros(len(drainage_graph), dtype=np.float64)
+
+    basin_links = get_basin_drainage_links(basin_data, watersheds)
+    basin_dependencies = get_basin_dependencies(basin_data, basin_links)
+    dependecy_count = {id: len(depedencies) for id, depedencies in basin_dependencies.items() if len(depedencies) > 0}
+
+    leaves = [(basin_data[id].saddle, id)
+              for id, dependencies in basin_dependencies.items()
+              if len(dependencies) == 0]
+
+    # DJS init
+    parents = np.full(len(drainage_graph), -1, dtype=np.int32)
+    parents[list(basin_data.keys())] = list(basin_data.keys())
+    pool_data = {basin: BasinPool(id=basin) for basin in basin_data}
+
+    queue = deque()
+    queue.extend(leaves)
+
+    while queue:
+        _, current = queue.popleft()
+
+        basin_pooling_solver(current, basin_data, parents, elevations_m, depths_m, areas_m2, throughputs_m3, pool_data, hydrology_graph, watersheds)
+
+        if current not in basin_links:
+            continue
+        dependant = basin_links[current]
+        dependecy_count[dependant] -= 1
+
+        if dependecy_count[dependant] == 0:
+            data = basin_data[dependant]
+            queue.append((data.saddle, dependant))
+
+    return hydrology_graph, throughputs_m3, parents, depths_m, pool_data
 
 def _compute_evaporation(normalized_temperatures, moisture, evaporation_factor=.175, temperature_strength=2):
     ev = (1 - moisture) * evaporation_factor * np.power(normalized_temperatures, temperature_strength)
