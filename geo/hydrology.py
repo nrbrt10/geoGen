@@ -141,7 +141,7 @@ def build_drainage_segments_sv(drainage_array: np.array, regions_to_ridge_points
 
     return segments
 
-def label_basins_se(elevations, drainage_array, watersheds, adjacency_graph) -> tuple[np.array, dict[int, Basin]]:
+def label_basins_se(elevations: np.array, drainage_array: np.array, watersheds: np.array, adjacency_graph: dict[int, list[int]]) -> tuple[np.array, dict[int, Basin]]:
     '''
     
     '''
