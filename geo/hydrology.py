@@ -4,6 +4,7 @@ from .adjacency import sort_adjacency_graph
 from .graph_utils import find_root
 from .models.basins import Basin, BasinPool, PoolState
 from enum import IntEnum
+from numpy.typing import NDArray
 
 class HydrologyTag(IntEnum):
     INLAND_SINK = -1
@@ -82,7 +83,7 @@ def compute_flow_volume(
         slopes: np.array,
         soil_capacity: np.array,
         areas_km2: np.array,
-        evaporation_rate: np.array | float=.175,
+        evaporation_rate: NDArray[np.float64] | float=.175,
         ):
 
     sources = [idx for idx, val in enumerate(drainage_graph) if idx not in drainage_graph and val not in [HydrologyTag.OCEAN]]
@@ -295,14 +296,14 @@ def cascade_throughputs_djs(start: int, value: float, pointer_array: np.array, d
 def basin_pooling_solver(
         basin_id: int,
         basin_data: dict[int, Basin],
-        djs_parents: np.array[int],
-        elevations_m: np.array[float],
-        depths_m: np.array[float],
-        areas_m2: np.array[float],
-        throughputs_m3: np.array[float],
+        djs_parents: np.array,
+        elevations_m: np.array,
+        depths_m: np.array,
+        areas_m2: np.array,
+        throughputs_m3: np.array,
         pool_data: dict[int, BasinPool],
-        hydrology_graph: np.array[int],
-        watersheds: np.array[int]
+        hydrology_graph: np.array,
+        watersheds: np.array
         ):
 
     basin = basin_data[basin_id]

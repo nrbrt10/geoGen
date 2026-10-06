@@ -26,7 +26,7 @@ def build_land_adjacency_graph(ridge_points, elevations, sea_level):
 
     return adjacency
 
-def sort_adjacency_graph(adjacency_graph: dict, sort_by_values: np.array | list, ascending: bool=True) -> dict:
+def sort_adjacency_graph(adjacency_graph: dict, sort_by_values: np.array, ascending: bool=True) -> dict:
     return {
         k: sorted(list(v), key=lambda i: sort_by_values[i], reverse=not ascending)
         for k, v in adjacency_graph.items()
