@@ -20,7 +20,7 @@ Elevation — Elevation is propagated outward from tectonic seeds, smoothed acro
 
 Wind & Climate — Prevailing wind vectors are computed per cell using latitude-based circulation bands. Temperature is derived from elevation and latitude; precipitation from orographic effects and wind exposure.
 
-Hydrology — Drainage is resolved globally using a Priority-Flood algorithm over the elevation field. Flow accumulates downstream; basins are identified, and spill points between adjacent basins are located to reconstruct full river networks, including resolution of endorheic (internally draining) basins. Ocean cells are excluded from the hydrology graph.
+Hydrology — Basin hierarchy is resolved using a watershed labeling algorithm that sorts all cross-basin boundary edges by saddle elevation and processes them in order, merging basins via union-find. This gives the correct hierarchical relationship between endorheic basins — a lower sink that eventually spills into a higher one is correctly registered as a child basin — without requiring iterative search.
 
 Biomes — Cells are classified using a Whittaker-style temperature/precipitation lookup, producing discrete biome assignments.
 

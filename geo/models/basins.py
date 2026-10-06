@@ -44,6 +44,3 @@ class BasinPool():
     def set_outflow(self, outflow):
         self.outflow = outflow
         self.state = PoolState.SPILLED
-
-    def add_child(self, child):
-        self.children.append(child)

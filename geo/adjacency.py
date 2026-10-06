@@ -17,7 +17,7 @@ def build_landmass_adjacency(discrete_units, ridge_points, continent_labels):
 
     return adjacency
 
-def build_land_adjancency_graph(ridge_points, elevations, sea_level):
+def build_land_adjacency_graph(ridge_points, elevations, sea_level):
     adjacency = {i: set() for i in range(len(elevations)) if elevations[i] > sea_level}
     for a, b, in ridge_points:
         if elevations[a] > sea_level and elevations[b] > sea_level:
