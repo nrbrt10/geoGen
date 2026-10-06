@@ -141,14 +141,26 @@ def build_drainage_segments_sv(drainage_array: np.array, regions_to_ridge_points
 
     return segments
 
-def label_basins_se(elevations: np.array, drainage_array: np.array, watersheds: np.array, adjacency_graph: dict[int, list[int]]) -> tuple[np.array, dict[int, Basin]]:
+def label_basins_kr(elevations: np.array, drainage_graph: np.array, watersheds: np.array, land_adjacency_graph: dict[int, list[int]]) -> tuple[np.array, dict[int, Basin]]:
     '''
-    
+    This is a modified version of Kruskal's greedy algorithm. It sorts the edges between watersheds that do not have an escape to the sea
+    and uses an watershed and elevation data to decide whether or not they belong to the same basin system or they are independent systems
+    where one drains into the other.
+
+    Inputs:
+    elevation data: np.array
+    drainage graph: np.array - uses HydrologyTag enum to tag inland sinks, ocean outlets (systems that drain into the ocean) and sea.
+    watershed tags: np.array
+    land ajdacency graph: dict[number, List[int]] - adjacency graph for land only nodes.
+
+    Outputs:
+    basin membership: np.array - macro basin membership.
+    basin data: dict[int, Basin] - Basin object contains spill information (at/to) & saddle elevation.
     '''
 
-    sorted_land_adjacency = sort_adjacency_graph(adjacency_graph, elevations)
-    inland_sinks = np.array([i for i, v in enumerate(drainage_array) if v == HydrologyTag.INLAND_SINK])
-    drain_to_sea = drainage_array[watersheds] == HydrologyTag.OCEAN_OUTLET
+    sorted_land_adjacency = sort_adjacency_graph(land_adjacency_graph, elevations)
+    inland_sinks = np.array([i for i, v in enumerate(drainage_graph) if v == HydrologyTag.INLAND_SINK])
+    drain_to_sea = drainage_graph[watersheds] == HydrologyTag.OCEAN_OUTLET
 
     edges = set()
     for u in sorted_land_adjacency:
@@ -164,7 +176,7 @@ def label_basins_se(elevations: np.array, drainage_array: np.array, watersheds: 
     spilled = set()
     basin_data = {sink: Basin(id=sink) for sink in inland_sinks}
 
-    basin_members = np.full(len(drainage_array), -1, dtype=np.int32)
+    basin_members = np.full(len(drainage_graph), -1, dtype=np.int32)
     basin_members[inland_sinks] = inland_sinks
 
     for i, (saddle, _, u, v) in enumerate(sorted_edges):
