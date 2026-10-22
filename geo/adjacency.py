@@ -1,5 +1,17 @@
 from . import np
 
+def adapt_sv_to_ridge_points(regions) -> np.array:
+    ridge_points = {}
+    for idx, region in enumerate(regions):
+        for i, vertex in enumerate(region):
+            key = tuple(sorted([region[i], region[i+1 if i+1 < len(region) else 0]]))
+            if key not in ridge_points:
+                ridge_points[key] = [idx]
+            else:
+                ridge_points[key].append(idx)
+                ridge_points[key] = sorted(ridge_points[key])
+    return ridge_points
+
 def build_adjacency(discrete_units, ridge_points):
     adjacency = {i: set() for i in range(len(discrete_units))}
     for a, b, in ridge_points:

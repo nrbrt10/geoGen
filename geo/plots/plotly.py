@@ -26,7 +26,7 @@ def polygons_to_triangles(polygons):
 
     return np.array(i_idx), np.array(j_idx), np.array(k_idx)
 
-def map_regions_to_vertex(regions):
+def map_vertices_to_regions(regions):
     vertices_map = {v: set() for region in regions for v in region}
     for idx, region in enumerate(regions):
         for vertex in region:
@@ -70,7 +70,7 @@ def normalize_elevations(elevations, sea_level, land_top_percentile=90):
 def apply_terrain_to_vertices(regions, vertices, points, norm_elevations, scaling_factor=.1):
     topography_vertices = vertices.copy()
     topography_points = points.copy()
-    vertices_by_region = map_regions_to_vertex(regions)
+    vertices_by_region = map_vertices_to_regions(regions)
     displacement_coefficients = np.ones(len(np.concatenate((vertices, points))))
     vertices_offset = len(vertices)
 

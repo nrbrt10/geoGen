@@ -463,3 +463,56 @@ def infer_hydrology(
 def _compute_evaporation(normalized_temperatures, moisture, evaporation_factor=.175, temperature_strength=2):
     ev = (1 - moisture) * evaporation_factor * np.power(normalized_temperatures, temperature_strength)
     return ev
+
+def populate_basin_members(basin_data: dict[int, Basin], elevations, land_adjacency):
+
+    sorted_land_adjacency = sort_adjacency_graph(land_adjacency, elevations)
+
+    for id, data in basin_data.items():
+        if not isinstance(data, Basin):
+            raise TypeError(f"Could not add members at: {id}. Not instance of Basin.")
+
+        spill_at = data.spill.at
+        spill_to = data.spill.to
+
+        limit_idx = max(spill_at, spill_to, key=lambda x: elevations[x])
+        visit_heap = [(elevations[id], id)]
+        in_heap = set([id])
+        visited = set()
+
+        members = []
+
+        while visit_heap:
+            _, current = heapq.heappop(visit_heap)
+            in_heap.discard(current)
+
+            if current == limit_idx:
+                if limit_idx == spill_at:
+                    members.append(current)
+                basin_data[id].members = members
+                break
+
+            members.append(current)
+            visited.add(current)
+
+            for neighbor in sorted_land_adjacency[current]:
+                if neighbor in visited or neighbor in in_heap:
+                    continue
+
+                heapq.heappush(visit_heap, (elevations[neighbor], neighbor))
+                in_heap.add(neighbor)
+
+    return
+
+def compute_basin_capacities(basin_data: dict[int, Basin], elevations, areas):
+    '''
+    Elevations and Areas have to be in the same unit of measure (m & m^2, km & km^2, etc).
+    '''
+    for id, data in basin_data.items():
+        if not isinstance(data, Basin):
+            raise TypeError(f"Could not add capacity at: {id}. Not instance of Basin.")
+
+        members = data.members
+        data.capacity = sum((data.saddle - elevations[members]) * areas[members])
+        
+    return
